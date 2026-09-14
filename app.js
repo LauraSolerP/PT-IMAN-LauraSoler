@@ -1,70 +1,108 @@
-//Definición de rutas y fragmentos asociados
 const routes = {
-    home: { main: 'fragments/home.html' },
-    dashboard: { main: 'fragments/dashboard.html', sidebar: 'fragments/sidebar.html', init: initDashboard },
-    profile: { main: 'fragments/profile.html', sidebar: 'fragments/sidebar.html', init: initProfile }
+    home: {
+        regions: { main: 'fragments/home.html' }
+    },
+    dashboard: {
+        regions: {
+            banner: 'fragments/banner.html',
+            sidebar: 'fragments/sidebar.html',
+            main: 'fragments/dashboard.html'
+        },
+        css: ['fragments/dashboard.css'],
+        init: initDashboard
+    },
+    profile: {
+        regions: {
+            banner: 'fragments/banner.html',
+            sidebar: 'fragments/sidebar.html',
+            main: 'fragments/profile.html'
+        },
+        init: initProfile
+    }
 };
 
-// Cache para almacenar fragmentos cargados y evitar recargas innecesarias
-const cache = new Map();
+// Orden en el que se pintan las regiones dentro de #app-container.
+const REGION_ORDER = ['sidebar', 'main', 'banner'];
 
-// Variable para almacenar la función de limpieza del dashboard, si es necesario
-let currentCleanup = null;
+// Cache de fragmentos HTML ya cargados para evitar fetchs repetidos.
+const fragmentCache = new Map();
 
-// Función para cargar fragmentos HTML de manera asíncrona y almacenarlos en caché
+// Carga un fragmento HTML desde el servidor y lo cachea en memoria.
 async function loadFragment(url) {
-    if (cache.has(url)) {
-        return cache.get(url);
+    if (fragmentCache.has(url)) {
+        return fragmentCache.get(url);
     }
     const response = await fetch(url);
     if (!response.ok) {
         throw new Error(`No se pudo cargar el recurso: ${url} (Estado: ${response.status})`);
     }
     const html = await response.text();
-    cache.set(url, html);
+    fragmentCache.set(url, html);
     return html;
 }
 
-// Función principal para manejar la navegación entre rutas
+// Cache de CSS de fragmentos ya cargados para evitar reinyectar <link> repetidos.
+const loadedFragmentCss = new Set();
+
+// Asegura que los CSS de los fragmentos estén cargados en el <head>.
+function ensureFragmentCss(hrefs = []) {
+    for (const href of hrefs) {
+        if (loadedFragmentCss.has(href)) continue;
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = href;
+        link.dataset.fragmentCss = href;
+        document.head.appendChild(link);
+        loadedFragmentCss.add(href);
+    }
+}
+
+// La función cleanup de la sección actual, si existe. Se llama antes de cargar la siguiente sección.
+let currentCleanup = null;
+
+// Cada navegación obtiene un id único para evitar que navegaciones lentas "pisen" a otras más rápidas.
+let navigationId = 0;
+
+// Navega a una sección específica, cargando sus fragmentos y ejecutando su init().
 async function navigate(routeName) {
+    const myNavId = ++navigationId;
+
     const container = document.getElementById('app-container');
-    
-    // Limpieza de la sección anterior si es necesario
+    const route = routes[routeName];
+
     if (typeof currentCleanup === 'function') {
         currentCleanup();
         currentCleanup = null;
     }
 
-    // Obtención de la ruta correspondiente o manejo de error si no existe
-    const route = routes[routeName] || { isError: true };
-
     try {
-        if (route.isError) {
+        if (!route) {
             throw new Error('La sección solicitada no existe en el sistema.');
         }
 
-        let contentHTML = '';
-        
-        // Carga de fragmentos principales y secundarios si están definidos
-        if (route.sidebar) {
-            const [mainHtml, sidebarHtml] = await Promise.all([
-                loadFragment(route.main),
-                loadFragment(route.sidebar)
-            ]);
-            contentHTML = `<div class="layout-composed"><aside class="sidebar">${sidebarHtml}</aside><section>${mainHtml}</section></div>`;
-        } else {
-            contentHTML = await loadFragment(route.main);
-        }
+        const regionNames = REGION_ORDER.filter(name => route.regions[name]);
+        const htmls = await Promise.all(
+            regionNames.map(name => loadFragment(route.regions[name]))
+        );
 
-        container.innerHTML = contentHTML;
+        if (myNavId !== navigationId) return;
+
+        const contentHTML = regionNames
+            .map((name, i) => `<div class="region-${name}" data-region="${name}">${htmls[i]}</div>`)
+            .join('');
+
+        container.innerHTML = wrapRegions(regionNames, contentHTML);
         updateActiveNav(routeName);
 
-        // Inicialización de funciones específicas para ciertas rutas, como el dashboard o profile en este caso
+        ensureFragmentCss(route.css);
+
         if (typeof route.init === 'function') {
             currentCleanup = route.init();
         }
 
     } catch (error) {
+        if (myNavId !== navigationId) return;
+
         container.innerHTML = `
             <div class="error-box">
                 <h2>Aviso del sistema</h2>
@@ -75,14 +113,20 @@ async function navigate(routeName) {
     }
 }
 
-// Función para actualizar la navegación activa en el menú
+// Si hay más de una región, se envuelven en un contenedor para aplicar un layout compuesto.
+function wrapRegions(regionNames, contentHTML) {
+    if (regionNames.length <= 1) return contentHTML;
+    return `<div class="layout-composed">${contentHTML}</div>`;
+}
+
+// Actualiza la navegación para reflejar la sección activa.
 function updateActiveNav(routeName) {
     document.querySelectorAll('.site-nav a').forEach(a => {
         a.classList.toggle('active', a.getAttribute('data-route') === routeName);
     });
 }
 
-// Función para inicializar el dashboard con un temporizador en vivo para comprobar visualmente que la sección se está inyectando sin recargar la página
+// Ejemplo de init() para la sección "dashboard" que actualiza un reloj en vivo.
 function initDashboard() {
     const timer = setInterval(() => {
         const timeEl = document.getElementById('live-timer');
@@ -94,33 +138,42 @@ function initDashboard() {
     };
 }
 
-// Función para inicializar la sección de perfil, como ejemplo para mostrar cómo el código puede ser escalable y modular, permitiendo agregar más secciones con sus propias inicializaciones y limpiezas según sea necesario
+// Ejemplo de init() para la sección "profile" que podría inicializar un formulario o cargar datos del usuario.
 function initProfile() {
-    console.log("Sección de perfil cargada.");
-    
+    console.log('Sección de perfil cargada.');
+
     return () => {
-        console.log("Saliendo de la sección de perfil.");
+        console.log('Saliendo de la sección de perfil.');
     };
 }
 
-// Manejo de eventos de navegación y estado del historial
+// Maneja los clics en enlaces de navegación y actualiza la URL sin recargar la página.
 document.addEventListener('click', (e) => {
-    if (e.target.matches('[data-route]')) {
-        e.preventDefault();
-        const route = e.target.getAttribute('data-route');
-        history.pushState({ route }, '', `#${route}`);
-        navigate(route);
-    }
+    const link = e.target.closest('[data-route]');
+    if (!link) return;
+
+    e.preventDefault();
+    const route = link.getAttribute('data-route');
+    history.pushState({ route }, '', `#${route}`);
+    navigate(route);
 });
 
-// Manejo del evento popstate para navegación con el botón de retroceso del navegador para mantener la consistencia de la interfaz
+// Maneja la navegación hacia atrás/adelante del historial del navegador.
 window.addEventListener('popstate', (e) => {
     const route = e.state?.route || window.location.hash.replace('#', '') || 'home';
     navigate(route);
 });
 
-// Inicialización de la aplicación al cargar la página, navegando a la ruta inicial basada en el hash de la URL o a 'home' por defecto
+// Inicializa la aplicación cargando la sección correspondiente a la URL actual.
 window.addEventListener('DOMContentLoaded', () => {
     const initialRoute = window.location.hash.replace('#', '') || 'home';
     navigate(initialRoute);
+});
+
+// Maneja el clic en el botón de cerrar del banner para eliminarlo del DOM.
+document.addEventListener('click', (e) => {
+    if (e.target.closest('[data-action="dismiss-banner"]')) {
+        const banner = e.target.closest('.region-banner');
+        if (banner) banner.remove();
+    }
 });
