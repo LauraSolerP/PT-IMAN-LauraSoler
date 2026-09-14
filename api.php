@@ -64,21 +64,6 @@ register_shutdown_function(function () {
     }
 });
 
-session_start();
-
-$jsonBody = json_decode(file_get_contents('php://input'), true);
-$requestData = is_array($jsonBody) ? $jsonBody : array_merge($_GET, $_POST);
-
-$actionName = $requestData['action'] ?? null;
-
-if (!$actionName || !is_string($actionName)) {
-    sendResponse(false, null, 'No action was specified.', 400);
-}
-
-if (!preg_match('/^[a-zA-Z0-9_]+$/', $actionName)) {
-    sendResponse(false, null, 'Action name format not allowed.', 403);
-}
-
 // Función para sanitizar los datos de entrada, eliminando etiquetas HTML y caracteres especiales.
 function sanitizeData($data) {
     if (is_array($data)) {
@@ -89,36 +74,6 @@ function sanitizeData($data) {
     }
 
     return $data;
-}
-
-$cleanData = sanitizeData($requestData);
-
-$actionFile = __DIR__ . '/actions/' . $actionName . '.php';
-
-if (!file_exists($actionFile)) {
-    throw new ActionNotFoundException("The requested action ('$actionName') does not exist.");
-}
-
-$actionDefinition = require $actionFile;
-
-if (!is_array($actionDefinition) || !isset($actionDefinition['execute']) || !is_callable($actionDefinition['execute'])) {
-    throw new Exception("Action file '$actionName' does not return a valid structure.");
-}
-
-// Verificacion de permisos y autenticación según la definición de la acción.
-$isPublic = $actionDefinition['public'] ?? false;
-$allowedRoles = $actionDefinition['roles'] ?? [];
-$validationSchema = $actionDefinition['validate'] ?? [];
-
-if (!$isPublic && empty($_SESSION['user_id'])) {
-    throw new UnauthenticatedException('You must be logged in to perform this action.');
-}
-
-if (!$isPublic && !empty($allowedRoles)) {
-    $userRole = $_SESSION['role'] ?? null;
-    if (!in_array($userRole, $allowedRoles, true)) {
-        throw new UnauthorizedException('You do not have permission to perform this action.');
-    }
 }
 
 // Función para validar los datos de entrada según un esquema definido.
@@ -151,6 +106,51 @@ function validateData(array $data, array $schema): void {
                 }
                 break;
         }
+    }
+}
+
+session_start();
+
+$jsonBody = json_decode(file_get_contents('php://input'), true);
+$requestData = is_array($jsonBody) ? $jsonBody : array_merge($_GET, $_POST);
+
+$actionName = $requestData['action'] ?? null;
+
+if (!$actionName || !is_string($actionName)) {
+    sendResponse(false, null, 'No action was specified.', 400);
+}
+
+if (!preg_match('/^[a-zA-Z0-9_]+$/', $actionName)) {
+    sendResponse(false, null, 'Action name format not allowed.', 403);
+}
+
+$cleanData = sanitizeData($requestData);
+
+$actionFile = __DIR__ . '/actions/' . $actionName . '.php';
+
+if (!file_exists($actionFile)) {
+    throw new ActionNotFoundException("The requested action ('$actionName') does not exist.");
+}
+
+$actionDefinition = require $actionFile;
+
+if (!is_array($actionDefinition) || !isset($actionDefinition['execute']) || !is_callable($actionDefinition['execute'])) {
+    throw new Exception("Action file '$actionName' does not return a valid structure.");
+}
+
+// Verificacion de permisos y autenticación según la definición de la acción.
+$isPublic = $actionDefinition['public'] ?? false;
+$allowedRoles = $actionDefinition['roles'] ?? [];
+$validationSchema = $actionDefinition['validate'] ?? [];
+
+if (!$isPublic && empty($_SESSION['user_id'])) {
+    throw new UnauthenticatedException('You must be logged in to perform this action.');
+}
+
+if (!$isPublic && !empty($allowedRoles)) {
+    $userRole = $_SESSION['role'] ?? null;
+    if (!in_array($userRole, $allowedRoles, true)) {
+        throw new UnauthorizedException('You do not have permission to perform this action.');
     }
 }
 
